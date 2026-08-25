@@ -1,0 +1,403 @@
+#!/usr/bin/env node
+/**
+ * codex-micro — set up and manage the OpenCode ↔ Codex Micro integration.
+ *
+ * Deliberately explicit: this touches device flash and macOS services, so
+ * every destructive step asks first and every prerequisite is checked by
+ * `doctor` rather than assumed.
+ */
+const fs = require("node:fs")
+const os = require("node:os")
+const path = require("node:path")
+const readline = require("node:readline")
+const { execFileSync, spawnSync } = require("node:child_process")
+
+const P = require("../src/paths.js")
+
+const ROOT = P.ROOT
+const PLUGIN_SRC = path.join(ROOT, "plugin", "codex-micro.ts")
+const OPENCODE_PLUGINS = path.join(os.homedir(), ".config", "opencode", "plugins")
+const PLUGIN_LINK = path.join(OPENCODE_PLUGINS, "codex-micro.ts")
+
+const AGENTS = {
+  daemon: "cc.worklouder.codex-status-daemon",
+  whisper: "cc.worklouder.codex-whisper-server",
+}
+const LA = path.join(os.homedir(), "Library", "LaunchAgents")
+
+const c = {
+  ok: (s) => `\x1b[32m${s}\x1b[0m`,
+  bad: (s) => `\x1b[31m${s}\x1b[0m`,
+  warn: (s) => `\x1b[33m${s}\x1b[0m`,
+  dim: (s) => `\x1b[2m${s}\x1b[0m`,
+  b: (s) => `\x1b[1m${s}\x1b[0m`,
+}
+
+function ask(q) {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
+  return new Promise((res) => rl.question(q, (a) => (rl.close(), res(a.trim().toLowerCase()))))
+}
+
+function sh(cmd, args, opts = {}) {
+  return spawnSync(cmd, args, { encoding: "utf8", ...opts })
+}
+
+// ---------------------------------------------------------------- doctor ---
+
+function checkDevice() {
+  try {
+    const HID = require("node-hid")
+    const d = HID.devices().find((x) => x.vendorId === 0x303a && x.productId === 0x8360)
+    if (!d) return { ok: false, msg: "not connected (303a:8360)" }
+    const vendor = HID.devices().some(
+      (x) => x.vendorId === 0x303a && x.productId === 0x8360 && x.usagePage === 0xff00,
+    )
+    return vendor
+      ? { ok: true, msg: "connected, vendor interface present" }
+      : { ok: false, msg: "connected but no 0xFF00 vendor interface" }
+  } catch (e) {
+    return { ok: false, msg: `node-hid failed to load: ${e.message}` }
+  }
+}
+
+async function checkDeviceOpen() {
+  try {
+    const { CM2 } = require("../vendor/cm2-agent-keys/src/device.js")
+    const { devicePath } = require("../src/keymap.js")
+    const dev = await CM2.open(devicePath())
+    const st = await dev.status()
+    dev.close()
+    return { ok: true, msg: `firmware ${st.version}, battery ${st.battery}%` }
+  } catch (e) {
+    const m = String(e.message || e)
+    if (/not permitted/i.test(m)) {
+      return { ok: false, msg: "permission denied — grant Input Monitoring to your node binary" }
+    }
+    return { ok: false, msg: m }
+  }
+}
+
+function checkAccessibility() {
+  const r = sh("/usr/bin/osascript", [
+    "-e",
+    'tell application "System Events" to get name of first process whose frontmost is true',
+  ])
+  return r.status === 0
+    ? { ok: true, msg: "granted" }
+    : { ok: false, msg: "denied — needed to read Ghostty tab order" }
+}
+
+function checkBin(name, fn) {
+  const p = fn()
+  return p ? { ok: true, msg: p } : { ok: false, msg: `${name} not found` }
+}
+
+function checkModel() {
+  const p = P.modelPath()
+  if (!fs.existsSync(p)) return { ok: false, msg: `missing (${path.basename(p)}) — run: codex-micro model` }
+  const mb = (fs.statSync(p).size / 1e6).toFixed(0)
+  return { ok: true, msg: `${path.basename(p)} (${mb} MB)` }
+}
+
+function checkAgent(label) {
+  const r = sh("launchctl", ["list"])
+  const line = (r.stdout || "").split("\n").find((l) => l.includes(label))
+  if (!line) return { ok: false, msg: "not loaded" }
+  const pid = line.trim().split(/\s+/)[0]
+  return pid === "-" ? { ok: false, msg: "loaded but not running" } : { ok: true, msg: `running (pid ${pid})` }
+}
+
+function checkPlugin() {
+  if (!fs.existsSync(PLUGIN_LINK)) return { ok: false, msg: "not installed" }
+  try {
+    const target = fs.realpathSync(PLUGIN_LINK)
+    return target === fs.realpathSync(PLUGIN_SRC)
+      ? { ok: true, msg: "linked" }
+      : { ok: false, msg: `points elsewhere: ${target}` }
+  } catch {
+    return { ok: false, msg: "broken link" }
+  }
+}
+
+async function checkKeymap() {
+  try {
+    const km = require("../src/keymap.js")
+    const dev = await km.open()
+    const ls = await km.layers(dev)
+    dev.close()
+    const withAgents = ls.filter((L) => L.keys.includes("KV_OAI_AG00"))
+    const user = withAgents.filter((L) => !L.protectedLayer)
+    if (!user.length) {
+      return { ok: false, msg: `agent keycodes only on the protected layer — run: codex-micro keys` }
+    }
+    return { ok: true, msg: `agent keys on layer id=${user.map((L) => L.id).join(",")}` }
+  } catch (e) {
+    return { ok: false, msg: String(e.message || e) }
+  }
+}
+
+async function doctor() {
+  console.log(c.b("\ncodex-micro doctor\n"))
+  const rows = []
+  const push = (name, r) => rows.push([name, r])
+
+  push("Codex Micro device", checkDevice())
+  push("device RPC (Input Monitoring)", await checkDeviceOpen())
+  push("Accessibility", checkAccessibility())
+  push("agent keycodes on a user layer", await checkKeymap())
+  push("opencode plugin", checkPlugin())
+  push("status daemon", checkAgent(AGENTS.daemon))
+  console.log(c.dim("  — dictation (optional) —"))
+  push("sox (rec)", checkBin("rec", P.bin.rec))
+  push("whisper-server", checkBin("whisper-server", P.bin.whisperServer))
+  push("whisper model", checkModel())
+  push("whisper service", checkAgent(AGENTS.whisper))
+
+  let bad = 0
+  for (const [name, r] of rows) {
+    if (!r.ok) bad++
+    console.log(`  ${r.ok ? c.ok("✓") : c.bad("✗")} ${name.padEnd(34)} ${c.dim(r.msg)}`)
+  }
+  console.log()
+  console.log(bad ? c.warn(`${bad} check(s) failed`) : c.ok("all checks passed"))
+  console.log()
+  return bad
+}
+
+// ----------------------------------------------------------------- setup ---
+
+function installPlugin() {
+  fs.mkdirSync(OPENCODE_PLUGINS, { recursive: true })
+  try {
+    fs.unlinkSync(PLUGIN_LINK)
+  } catch {}
+  fs.symlinkSync(PLUGIN_SRC, PLUGIN_LINK)
+  console.log(`  linked ${PLUGIN_LINK} -> ${PLUGIN_SRC}`)
+}
+
+function nodeBinary() {
+  // launchd cannot use asdf/volta shims; resolve a real binary.
+  return process.execPath
+}
+
+function installAgents({ whisper }) {
+  P.ensureDirs()
+  fs.mkdirSync(LA, { recursive: true })
+  const subs = {
+    ROOT,
+    NODE: nodeBinary(),
+    LOGS: P.LOG_DIR,
+    MODEL: P.modelPath(),
+    PORT: String(P.config().whisperPort),
+    WHISPER_SERVER: P.bin.whisperServer() || "/opt/homebrew/bin/whisper-server",
+  }
+  const files = [["daemon.plist.template", AGENTS.daemon]]
+  if (whisper) files.push(["whisper-server.plist.template", AGENTS.whisper])
+
+  for (const [tpl, label] of files) {
+    let s = fs.readFileSync(path.join(ROOT, "templates", tpl), "utf8")
+    for (const [k, v] of Object.entries(subs)) s = s.split(`{{${k}}}`).join(v)
+    const dest = path.join(LA, `${label}.plist`)
+    fs.writeFileSync(dest, s)
+    sh("launchctl", ["unload", dest])
+    const r = sh("launchctl", ["load", dest])
+    console.log(`  ${r.status === 0 ? c.ok("loaded") : c.bad("failed")} ${label}`)
+  }
+}
+
+async function downloadModel() {
+  P.ensureDirs()
+  const dest = P.modelPath()
+  if (fs.existsSync(dest)) return console.log(`  model already present: ${dest}`)
+  const name = P.config().whisperModel
+  const url = `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/${name}`
+  console.log(`  downloading ${name} …`)
+  const r = sh("curl", ["-fL", "--progress-bar", "-o", dest, url], { stdio: "inherit" })
+  if (r.status !== 0) throw new Error("model download failed")
+  console.log(`  saved ${dest}`)
+}
+
+async function writeKeys({ yes, actions, layerId }) {
+  const km = require("../src/keymap.js")
+  const dev = await km.open()
+  try {
+    const { file } = await km.backup(dev)
+    console.log(`  backup: ${file}`)
+
+    const ls = await km.layers(dev)
+    const target =
+      layerId != null ? ls.find((L) => L.id === Number(layerId)) : ls.find((L) => !L.protectedLayer)
+    if (!target) throw new Error("no user layer found to write to")
+
+    const plan = await km.planKeys(dev, { targetLayerId: target.id, actions })
+    console.log(`\n  layer id=${target.id} ${JSON.stringify(target.name)}`)
+    console.log(c.dim("  before:"))
+    plan.before.forEach((r, i) => console.log(c.dim(`    row${i} ${JSON.stringify(r)}`)))
+    console.log(c.b("  after:"))
+    plan.after.forEach((r, i) => console.log(`    row${i} ${JSON.stringify(r)}`))
+    console.log(
+      c.warn(
+        "\n  This is a persistent flash write. Keys become vendor keys and stop\n" +
+          "  sending normal keystrokes. Restore anytime with: codex-micro restore",
+      ),
+    )
+
+    if (!yes) {
+      const a = await ask("\n  Proceed? [y/N] ")
+      if (a !== "y" && a !== "yes") return console.log("  aborted")
+    }
+
+    const res = await km.commitKeys(dev, plan.km, target.id)
+    console.log(res.ok ? c.ok("\n  written and verified") : c.bad("\n  verification FAILED — restore from backup"))
+  } finally {
+    dev.close()
+  }
+}
+
+async function setup(args) {
+  const yes = args.includes("--yes")
+  const withDictation = !args.includes("--no-dictation")
+
+  console.log(c.b("\ncodex-micro setup\n"))
+  P.ensureDirs()
+
+  console.log("1. opencode plugin")
+  installPlugin()
+
+  console.log("\n2. device keymap")
+  await writeKeys({ yes, actions: true })
+
+  if (withDictation) {
+    console.log("\n3. dictation (optional)")
+    const missing = ["rec", "whisper-server"].filter((b) =>
+      b === "rec" ? !P.bin.rec() : !P.bin.whisperServer(),
+    )
+    if (missing.length) {
+      console.log(c.warn(`  missing: ${missing.join(", ")}`))
+      console.log("  install with: brew install whisper-cpp sox")
+    } else {
+      await downloadModel()
+    }
+  }
+
+  console.log("\n4. background services")
+  installAgents({ whisper: withDictation && !!P.bin.whisperServer() })
+
+  console.log(c.b("\nRemaining manual steps (macOS will not let us script these):\n"))
+  console.log("  • Input Monitoring — System Settings → Privacy & Security → Input Monitoring")
+  console.log(`    add: ${nodeBinary()}`)
+  console.log("  • Accessibility — same pane, Accessibility (for Ghostty tab order)")
+  console.log("  • Restart any running opencode sessions to load the plugin")
+  console.log("\nThen run: codex-micro doctor\n")
+}
+
+// -------------------------------------------------------------- services ---
+
+function services(cmd) {
+  for (const label of Object.values(AGENTS)) {
+    const plist = path.join(LA, `${label}.plist`)
+    if (!fs.existsSync(plist)) continue
+    if (cmd === "start") sh("launchctl", ["load", plist])
+    if (cmd === "stop") sh("launchctl", ["unload", plist])
+    if (cmd === "restart") {
+      sh("launchctl", ["unload", plist])
+      sh("launchctl", ["load", plist])
+    }
+    console.log(`  ${cmd}: ${label}`)
+  }
+}
+
+function uninstall() {
+  for (const label of Object.values(AGENTS)) {
+    const plist = path.join(LA, `${label}.plist`)
+    if (fs.existsSync(plist)) {
+      sh("launchctl", ["unload", plist])
+      fs.unlinkSync(plist)
+      console.log(`  removed ${label}`)
+    }
+  }
+  try {
+    fs.unlinkSync(PLUGIN_LINK)
+    console.log("  removed plugin link")
+  } catch {}
+  console.log(c.dim(`\n  state kept at ${P.STATE_DIR} (delete manually if you want it gone)`))
+  console.log(c.dim("  device keymap unchanged — run `codex-micro restore` to revert it"))
+}
+
+async function restore(file) {
+  const km = require("../src/keymap.js")
+  const dev = await km.open()
+  try {
+    let f = file
+    if (!f || f === "--latest") {
+      const list = fs.readdirSync(P.BACKUP_DIR).filter((x) => x.startsWith("keymap-")).sort()
+      if (!list.length) throw new Error(`no backups in ${P.BACKUP_DIR}`)
+      f = path.join(P.BACKUP_DIR, list.at(-1))
+    }
+    console.log(`  restoring ${f}`)
+    await km.restore(dev, f)
+    console.log(c.ok("  restored — keys apply live"))
+  } finally {
+    dev.close()
+  }
+}
+
+// ------------------------------------------------------------------ main ---
+
+const USAGE = `
+${c.b("codex-micro")} — OpenCode ↔ Work Louder Codex Micro
+
+  setup [--yes] [--no-dictation]   install plugin, keymap, services
+  doctor                           check every prerequisite
+  keys [--actions] [--layer ID]    write vendor keycodes to a user layer
+  backup                           save the device keymap
+  restore [file|--latest]          restore a keymap backup
+  model                            download the whisper model
+  services start|stop|restart      control the background services
+  effects [a b]                    compare lighting effects on the pad
+  mic [--list]                     resolve/list audio capture devices
+  uninstall                        remove services and plugin link
+
+state: ${P.STATE_DIR}
+`
+
+;(async () => {
+  const [cmd, ...args] = process.argv.slice(2)
+  switch (cmd) {
+    case "setup":
+      return setup(args)
+    case "doctor":
+      return process.exit((await doctor()) ? 1 : 0)
+    case "keys":
+      return writeKeys({
+        yes: args.includes("--yes"),
+        actions: args.includes("--actions"),
+        layerId: args.includes("--layer") ? args[args.indexOf("--layer") + 1] : null,
+      })
+    case "backup": {
+      const km = require("../src/keymap.js")
+      const dev = await km.open()
+      const { file } = await km.backup(dev)
+      dev.close()
+      return console.log(`  ${file}`)
+    }
+    case "restore":
+      return restore(args[0])
+    case "model":
+      return downloadModel()
+    case "services":
+      return services(args[0] || "restart")
+    case "mic":
+      return require("../src/mic.js") && spawnSync(process.execPath, [path.join(ROOT, "src", "mic.js"), ...args], { stdio: "inherit" })
+    case "effects":
+      return spawnSync(process.execPath, [path.join(ROOT, "src", "effects.js"), ...args], { stdio: "inherit" })
+    case "uninstall":
+      return uninstall()
+    default:
+      console.log(USAGE)
+      process.exit(cmd ? 1 : 0)
+  }
+})().catch((e) => {
+  console.error(c.bad(`\nerror: ${e.message || e}\n`))
+  process.exit(1)
+})

@@ -1,0 +1,9 @@
+node_modules/
+*.log
+.DS_Store
+
+# machine-specific state never belongs in the repo
+state/
+models/
+backups/
+codex-*.json

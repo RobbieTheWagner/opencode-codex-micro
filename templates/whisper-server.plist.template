@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>cc.worklouder.codex-whisper-server</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{{WHISPER_SERVER}}</string>
+        <string>-m</string>
+        <string>{{MODEL}}</string>
+        <string>--host</string>
+        <string>127.0.0.1</string>
+        <string>--port</string>
+        <string>{{PORT}}</string>
+        <string>-t</string>
+        <string>6</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>StandardOutPath</key>
+    <string>{{LOGS}}/whisper-server.log</string>
+    <key>StandardErrorPath</key>
+    <string>{{LOGS}}/whisper-server.err</string>
+</dict>
+</plist>

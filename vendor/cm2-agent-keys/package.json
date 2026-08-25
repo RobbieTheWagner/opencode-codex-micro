@@ -1,0 +1,30 @@
+{
+  "name": "cm2-agent-keys",
+  "version": "0.1.0",
+  "description": "Per-key agent LEDs and key events for the Work Louder Creator Micro 2 — the Codex Micro's agent-key features, unlocked on the open device",
+  "main": "src/device.js",
+  "bin": {
+    "cm2": "bin/cm2.js"
+  },
+  "scripts": {
+    "test": "node test/smoke.js"
+  },
+  "keywords": [
+    "worklouder",
+    "creator-micro",
+    "codex-micro",
+    "macropad",
+    "hid",
+    "rgb",
+    "claude-code",
+    "agents"
+  ],
+  "author": "Andy Aitken",
+  "license": "MIT",
+  "dependencies": {
+    "node-hid": "^3.0.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

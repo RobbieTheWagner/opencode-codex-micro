@@ -1,0 +1,12 @@
+{
+  "name": "opencode-codex-micro",
+  "version": "0.1.0",
+  "description": "Drive the Work Louder Codex Micro / Creator Micro 2 from OpenCode: per-session status LEDs, approve/deny keys, YOLO mode, and hold-to-talk dictation",
+  "bin": { "codex-micro": "./bin/codex-micro" },
+  "engines": { "node": ">=18" },
+  "dependencies": { "node-hid": "^3.4.0" },
+  "keywords": ["opencode", "codex-micro", "creator-micro", "worklouder", "macropad", "hid", "rgb"],
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/RobbieTheWagner/opencode-codex-micro.git" },
+  "os": ["darwin"]
+}
