@@ -135,6 +135,30 @@ export const CodexStatusPlugin: Plugin = async ({ directory, client }) => {
 
   let current: State = "idle"
   let pending: Pending | null = null
+
+  function log(message: string) {
+    return client.app
+      .log({ body: { service: "codex-micro", level: "info", message } })
+      .catch(() => {})
+  }
+
+  /** If YOLO is armed, approve this permission over the API immediately. */
+  async function maybeYolo(id: string, sessionID: string) {
+    try {
+      const y = require_("../src/yolo.js")
+      if (!y.isActive()) return
+      await client.postSessionIdPermissionsPermissionId({
+        path: { id: sessionID, permissionID: id },
+        body: { response: "always" },
+      })
+      y.audit(`AUTO-APPROVED ${id} [${path.basename(dir)}]`)
+      await log(`YOLO auto-approved ${id}`)
+      pending = null
+      publish("busy")
+    } catch (e: any) {
+      await log(`YOLO auto-approve failed: ${e?.message || e}`)
+    }
+  }
   // opencode titles the terminal "OC | <session title>"; the daemon matches
   // this against the focused Ghostty tab to target the right session.
   let sessionTitle = ""
@@ -194,11 +218,11 @@ export const CodexStatusPlugin: Plugin = async ({ directory, client }) => {
         path: { id: req.sessionID, permissionID: req.permissionID },
         body: { response: req.response },
       })
-      console.log(`[codex-status] permission ${req.permissionID} -> ${req.response} (from Agent pad)`)
+      await log(`permission ${req.permissionID} -> ${req.response} (from pad)`)
       pending = null
       publish("busy")
     } catch (e: any) {
-      console.warn("[codex-status] failed to answer permission:", e?.message || e)
+      await log(`failed to answer permission ${req.permissionID}: ${e?.message || e}`)
     }
   }
 
@@ -288,9 +312,36 @@ export const CodexStatusPlugin: Plugin = async ({ directory, client }) => {
         case "session.error":
           if (!isSub(event.properties?.sessionID)) publish("error")
           break
+        // Permission events differ between opencode builds: the docs list
+        // `permission.asked`, the SDK types define `permission.updated` with a
+        // full Permission payload. Handle both, and record the id/sessionID --
+        // without them we cannot answer the prompt from the pad.
         case "permission.asked":
+        case "permission.updated": {
+          const p = event.properties || {}
+          const id = p.id || p.permissionID
+          const sessionID = p.sessionID
+          if (id && sessionID) {
+            pending = { id, sessionID }
+            // YOLO answers immediately over the API. Doing it here rather than
+            // in the permission.ask hook means it does not depend on a hook
+            // that this build never calls.
+            void maybeYolo(id, sessionID)
+          } else {
+            void log(`permission event without id: ${JSON.stringify(Object.keys(p))}`)
+          }
           publish("approval")
           break
+        }
+
+        case "permission.replied": {
+          const p = event.properties || {}
+          if (!p.permissionID || (pending && pending.id === p.permissionID)) {
+            pending = null
+            publish(current === "approval" ? "busy" : current)
+          }
+          break
+        }
       }
     },
   }
