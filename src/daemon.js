@@ -20,6 +20,9 @@ const path = require("node:path")
 const { execFile, execFileSync } = require("node:child_process")
 const HID = require("node-hid")
 const { CM2 } = require("../vendor/cm2-agent-keys/src/device.js")
+const P = require("./paths.js")
+const yolo = require("./yolo.js")
+const { assignSlots } = require("./tabs.js")
 
 
 const VID = 0x303a, PID = 0x8360, USAGE_PAGE = 0xff00
@@ -44,10 +47,6 @@ const COLORS = {
 const OFF = { color: 0x000000, brightness: 0, effect: "off", speed: 0 }
 
 const log = (...a) => console.log(new Date().toISOString(), ...a)
-
-const P = require("./paths.js")
-const yolo = require("./yolo.js")
-const { assignSlots } = require("./tabs.js")
 
 const ACT_YOLO = P.config().keys.yolo
 const DEBUG_KEYS_FLAG = path.join(P.STATE_DIR, ".debug-keys")
