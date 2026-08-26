@@ -1,12 +1,17 @@
 # opencode-codex-micro
 
-Drive a **Work Louder Codex Micro** (or **Creator Micro 2**) from
-[OpenCode](https://opencode.ai): per-session status LEDs, physical
-approve/deny, a YOLO auto-approve key, and hold-to-talk dictation.
+Turn a **Work Louder Codex Micro** (or **Creator Micro 2**) into a status
+display and control surface for your coding agents: per-session status LEDs,
+physical approve/deny, a YOLO auto-approve key, and hold-to-talk dictation.
 
-Each opencode session claims one of the six translucent Agent keys and colours
-it with that session's live state. Pressing a key jumps to that session's
-Ghostty tab.
+Each agent session claims one of the six translucent Agent keys and colours it
+with that session's live state. Pressing a key jumps to that session's Ghostty
+tab.
+
+Works with **any agent that can run a command on an event** —
+[opencode](https://opencode.ai) (deepest integration, via its plugin API),
+Claude Code, Codex, Gemini CLI, Cursor, Copilot, and ~15 more via thin
+adapters. See [docs/adapters.md](docs/adapters.md).
 
 | State | Colour | Effect |
 | --- | --- | --- |
@@ -29,6 +34,17 @@ Ghostty tab.
 - Node 18+
 - Ghostty (for tab mapping and focus)
 - Optional, for dictation: `brew install whisper-cpp sox`
+
+## Supported agents
+
+| Feature | opencode | Other agents |
+| --- | --- | --- |
+| Status LEDs, key → focus tab | ✅ | ✅ |
+| ✓/✗ approve-deny, YOLO | ✅ API | ⚠️ keystroke fallback |
+| Dictation insert | ✅ API | ⚠️ clipboard paste |
+
+Only the opencode path is hardware-verified; the other adapters are documented
+as untested in [docs/adapters.md](docs/adapters.md).
 
 ## Install
 
