@@ -14,10 +14,16 @@ const { execFileSync, spawnSync } = require("node:child_process")
 
 const P = require("../src/paths.js")
 
-const ROOT = P.ROOT
-const PLUGIN_SRC = path.join(ROOT, "plugin", "codex-micro.ts")
+// Where the code will live after install. Running from a git checkout with
+// --dev keeps everything in place; otherwise setup copies the package to a
+// stable directory, because `npx github:...` runs from a disposable cache.
+const RUNNING_FROM = P.ROOT
+let ROOT = P.ROOT
+const PLUGIN_SRC = () => path.join(ROOT, "plugin", "codex-micro.ts")
 const OPENCODE_PLUGINS = path.join(os.homedir(), ".config", "opencode", "plugins")
 const PLUGIN_LINK = path.join(OPENCODE_PLUGINS, "codex-micro.ts")
+
+const PKG_PARTS = ["package.json", "bin", "src", "plugin", "templates", "vendor"]
 
 const AGENTS = {
   daemon: "cc.worklouder.codex-status-daemon",
@@ -62,8 +68,8 @@ function checkDevice() {
 
 async function checkDeviceOpen() {
   try {
-    const { CM2 } = require("../vendor/cm2-agent-keys/src/device.js")
-    const { devicePath } = require("../src/keymap.js")
+    const { CM2 } = require(path.join(ROOT, "vendor", "cm2-agent-keys", "src", "device.js"))
+    const { devicePath } = require(path.join(ROOT, "src", "keymap.js"))
     const dev = await CM2.open(devicePath())
     const st = await dev.status()
     dev.close()
@@ -111,7 +117,8 @@ function checkPlugin() {
   if (!fs.existsSync(PLUGIN_LINK)) return { ok: false, msg: "not installed" }
   try {
     const target = fs.realpathSync(PLUGIN_LINK)
-    return target === fs.realpathSync(PLUGIN_SRC)
+    const expected = fs.existsSync(PLUGIN_SRC()) ? fs.realpathSync(PLUGIN_SRC()) : null
+    return expected && target === expected
       ? { ok: true, msg: "linked" }
       : { ok: false, msg: `points elsewhere: ${target}` }
   } catch {
@@ -121,7 +128,7 @@ function checkPlugin() {
 
 async function checkKeymap() {
   try {
-    const km = require("../src/keymap.js")
+    const km = require(path.join(ROOT, "src", "keymap.js"))
     const dev = await km.open()
     const ls = await km.layers(dev)
     dev.close()
@@ -166,13 +173,47 @@ async function doctor() {
 
 // ----------------------------------------------------------------- setup ---
 
+/** Copy the package to a stable location so services never point into a cache. */
+function installSelf({ dev }) {
+  if (dev) {
+    console.log(`  dev mode: running in place (${RUNNING_FROM})`)
+    ROOT = RUNNING_FROM
+    return
+  }
+
+  const dest = P.INSTALL_DIR
+  if (path.resolve(RUNNING_FROM) === path.resolve(dest)) {
+    console.log(`  already installed at ${dest}`)
+    ROOT = dest
+    return
+  }
+
+  fs.mkdirSync(dest, { recursive: true })
+  for (const part of PKG_PARTS) {
+    const from = path.join(RUNNING_FROM, part)
+    if (!fs.existsSync(from)) continue
+    const to = path.join(dest, part)
+    fs.rmSync(to, { recursive: true, force: true })
+    fs.cpSync(from, to, { recursive: true })
+  }
+  console.log(`  installed to ${dest}`)
+
+  // production deps only; node-hid ships prebuilds
+  if (!fs.existsSync(path.join(dest, "node_modules", "node-hid"))) {
+    console.log("  installing dependencies …")
+    const r = sh("npm", ["install", "--omit=dev", "--silent", "--no-audit", "--no-fund"], { cwd: dest, stdio: "inherit" })
+    if (r.status !== 0) throw new Error("npm install failed in " + dest)
+  }
+  ROOT = dest
+}
+
 function installPlugin() {
   fs.mkdirSync(OPENCODE_PLUGINS, { recursive: true })
   try {
     fs.unlinkSync(PLUGIN_LINK)
   } catch {}
-  fs.symlinkSync(PLUGIN_SRC, PLUGIN_LINK)
-  console.log(`  linked ${PLUGIN_LINK} -> ${PLUGIN_SRC}`)
+  fs.symlinkSync(PLUGIN_SRC(), PLUGIN_LINK)
+  console.log(`  linked ${PLUGIN_LINK} -> ${PLUGIN_SRC()}`)
 }
 
 function nodeBinary() {
@@ -218,7 +259,7 @@ async function downloadModel() {
 }
 
 async function writeKeys({ yes, actions, layerId }) {
-  const km = require("../src/keymap.js")
+  const km = require(path.join(ROOT, "src", "keymap.js"))
   const dev = await km.open()
   try {
     const { file } = await km.backup(dev)
@@ -261,14 +302,17 @@ async function setup(args) {
   console.log(c.b("\ncodex-micro setup\n"))
   P.ensureDirs()
 
-  console.log("1. opencode plugin")
+  console.log("1. install")
+  installSelf({ dev: args.includes("--dev") })
+
+  console.log("\n2. opencode plugin")
   installPlugin()
 
-  console.log("\n2. device keymap")
+  console.log("\n3. device keymap")
   await writeKeys({ yes, actions: true })
 
   if (withDictation) {
-    console.log("\n3. dictation (optional)")
+    console.log("\n4. dictation (optional)")
     const missing = ["rec", "whisper-server"].filter((b) =>
       b === "rec" ? !P.bin.rec() : !P.bin.whisperServer(),
     )
@@ -280,7 +324,7 @@ async function setup(args) {
     }
   }
 
-  console.log("\n4. background services")
+  console.log("\n5. background services")
   installAgents({ whisper: withDictation && !!P.bin.whisperServer() })
 
   console.log(c.b("\nRemaining manual steps (macOS will not let us script these):\n"))
@@ -325,7 +369,7 @@ function uninstall() {
 }
 
 async function restore(file) {
-  const km = require("../src/keymap.js")
+  const km = require(path.join(ROOT, "src", "keymap.js"))
   const dev = await km.open()
   try {
     let f = file
@@ -347,8 +391,10 @@ async function restore(file) {
 const USAGE = `
 ${c.b("codex-micro")} — OpenCode ↔ Work Louder Codex Micro
 
-  setup [--yes] [--no-dictation]   install plugin, keymap, services
+  setup [--yes] [--no-dictation]   install everything (add --dev to run in place)
   doctor                           check every prerequisite
+  event --agent NAME [--event E]   report agent state (adapters call this)
+  sessions                         list live agent sessions
   keys [--actions] [--layer ID]    write vendor keycodes to a user layer
   backup                           save the device keymap
   restore [file|--latest]          restore a keymap backup
@@ -375,7 +421,7 @@ state: ${P.STATE_DIR}
         layerId: args.includes("--layer") ? args[args.indexOf("--layer") + 1] : null,
       })
     case "backup": {
-      const km = require("../src/keymap.js")
+      const km = require(path.join(ROOT, "src", "keymap.js"))
       const dev = await km.open()
       const { file } = await km.backup(dev)
       dev.close()
@@ -389,6 +435,18 @@ state: ${P.STATE_DIR}
       return services(args[0] || "restart")
     case "mic":
       return require("../src/mic.js") && spawnSync(process.execPath, [path.join(ROOT, "src", "mic.js"), ...args], { stdio: "inherit" })
+    case "event":
+      return spawnSync(process.execPath, [path.join(ROOT, "src", "event.js"), ...args], { stdio: "inherit" })
+    case "sessions": {
+      const session = require(path.join(ROOT, "src", "session.js"))
+      const live = session.live()
+      if (!live.length) return console.log("  (no live sessions)")
+      for (const e of live) {
+        const who = e.pid ? `pid ${e.pid}` : e.sessionKey
+        console.log(`  ${String(e.state).padEnd(9)} ${String(e.agent).padEnd(12)} ${who}  ${e.title || path.basename(e.dir || "")}`)
+      }
+      return
+    }
     case "effects":
       return spawnSync(process.execPath, [path.join(ROOT, "src", "effects.js"), ...args], { stdio: "inherit" })
     case "uninstall":

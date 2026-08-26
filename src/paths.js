@@ -13,6 +13,21 @@ const { execFileSync } = require("node:child_process")
 
 const ROOT = path.resolve(__dirname, "..")
 
+/**
+ * Where the code lives once installed.
+ *
+ * `npx github:...` executes from a temporary cache directory that npm will
+ * happily delete, and LaunchAgents referencing it would silently break. So
+ * setup copies the package here and points everything at this path instead.
+ */
+const INSTALL_DIR =
+  process.env.CODEX_MICRO_HOME || path.join(os.homedir(), ".local", "share", "opencode-codex-micro")
+
+/** True when we are running from a throwaway npx/npm cache directory. */
+function isEphemeral(dir = ROOT) {
+  return /[\\/](_npx|\.npm[\\/]_cacache|npm-cache)[\\/]/.test(dir) || dir.startsWith(os.tmpdir())
+}
+
 /** Per-user state: slot file, caches, logs, backups. Never in the repo. */
 const STATE_DIR =
   process.env.CODEX_MICRO_STATE || path.join(os.homedir(), ".local", "state", "opencode-codex-micro")
@@ -92,6 +107,8 @@ function whisperUrl(pathname = "/inference") {
 
 module.exports = {
   ROOT,
+  INSTALL_DIR,
+  isEphemeral,
   STATE_DIR,
   LOG_DIR,
   BACKUP_DIR,

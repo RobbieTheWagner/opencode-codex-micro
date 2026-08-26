@@ -171,14 +171,16 @@ export const CodexStatusPlugin: Plugin = async ({ directory, client }) => {
       me.state = state
       me.ts = Date.now()
       me.title = sessionTitle
-      me.caps = { dictation: !!dictation }
+      me.agent = "opencode"
+      me.caps = { dictation: !!dictation, permissions: "api", textInsert: "api" }
       me.pending = pending
       if (pending) me.pendingTs = me.pendingTs || Date.now()
       else delete me.pendingTs
     } else {
       all.push({
         slot, pid: mine, dir, state, ts: Date.now(), title: sessionTitle,
-        caps: { dictation: !!dictation },
+        agent: "opencode",
+        caps: { dictation: !!dictation, permissions: "api", textInsert: "api" },
         pending, pendingTs: pending ? Date.now() : undefined,
       })
     }
