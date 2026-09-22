@@ -134,7 +134,16 @@ export const CodexStatusPlugin: Plugin = async ({ directory, client }) => {
   writeClaims(claims)
 
   let current: State = "idle"
-  let pending: Pending | null = null
+  // Parallel tools/subagents can all ask at once. Keep the oldest request at
+  // the front, matching the prompt order, without losing the others on reply.
+  const permissions = new Map<string, Pending>()
+  const replying = new Set<string>()
+  const yoloRetryAt = new Map<string, number>()
+  const y = require_("../src/yolo.js")
+
+  function firstPending(): Pending | null {
+    return permissions.values().next().value || null
+  }
 
   function log(message: string) {
     return client.app
@@ -142,21 +151,50 @@ export const CodexStatusPlugin: Plugin = async ({ directory, client }) => {
       .catch(() => {})
   }
 
-  /** If YOLO is armed, approve this permission over the API immediately. */
-  async function maybeYolo(id: string, sessionID: string) {
+  async function answerPermission(p: Pending, response: "once" | "always" | "reject", automatic = false) {
+    if (!permissions.has(p.id) || replying.has(p.id)) return
+    replying.add(p.id)
     try {
-      const y = require_("../src/yolo.js")
-      if (!y.isActive()) return
-      await client.postSessionIdPermissionsPermissionId({
-        path: { id: sessionID, permissionID: id },
-        body: { response: "always" },
+      const result = await client.postSessionIdPermissionsPermissionId({
+        path: { id: p.sessionID, permissionID: p.id },
+        query: { directory: dir },
+        body: { response },
+        throwOnError: true,
       })
-      y.audit(`AUTO-APPROVED ${id} [${path.basename(dir)}]`)
-      await log(`YOLO auto-approved ${id}`)
-      pending = null
-      publish("busy")
+      // SDK calls normally RESOLVE with { error } for HTTP failures. Never
+      // discard the prompt or claim success unless the server acknowledged it.
+      if (result.error || result.data !== true) {
+        throw new Error(result.error ? JSON.stringify(result.error) : "Permission reply was not acknowledged")
+      }
+      permissions.delete(p.id)
+      yoloRetryAt.delete(p.id)
+      publish(current === "approval" ? "busy" : current)
+      if (automatic) y.audit(`AUTO-APPROVED ${p.id} [${path.basename(dir)}]`)
+      await log(`permission ${p.id} -> ${response} (${automatic ? "YOLO" : "from pad"})`)
     } catch (e: any) {
-      await log(`YOLO auto-approve failed: ${e?.message || e}`)
+      yoloRetryAt.set(p.id, Date.now() + 5000)
+      const message = `Failed to answer permission ${p.id}: ${e?.message || JSON.stringify(e)}`
+      await log(message)
+      await client.tui.showToast({
+        body: { variant: "error", title: "Codex Micro", message, duration: 5000 },
+      }).catch(() => {})
+    } finally {
+      replying.delete(p.id)
+    }
+  }
+
+  let checkingYolo = false
+  async function maybeYolo() {
+    if (checkingYolo || !permissions.size || !y.isActive()) return
+    checkingYolo = true
+    try {
+      for (const p of [...permissions.values()]) {
+        if (!y.isActive()) break
+        if (Date.now() < (yoloRetryAt.get(p.id) || 0)) continue
+        await answerPermission(p, "always", true)
+      }
+    } finally {
+      checkingYolo = false
     }
   }
   // opencode titles the terminal "OC | <session title>"; the daemon matches
@@ -164,6 +202,8 @@ export const CodexStatusPlugin: Plugin = async ({ directory, client }) => {
   let sessionTitle = ""
 
   function publish(state: State) {
+    const pending = firstPending()
+    if (pending && state !== "error") state = "approval"
     current = state
     const all = readClaims().filter((c) => alive(c.pid))
     const me = all.find((c) => c.pid === mine)
@@ -173,9 +213,9 @@ export const CodexStatusPlugin: Plugin = async ({ directory, client }) => {
       me.title = sessionTitle
       me.agent = "opencode"
       me.caps = { dictation: !!dictation, permissions: "api", textInsert: "api" }
-      me.pending = pending
-      if (pending) me.pendingTs = me.pendingTs || Date.now()
+      if (pending) me.pendingTs = me.pending?.id === pending.id ? me.pendingTs || Date.now() : Date.now()
       else delete me.pendingTs
+      me.pending = pending
     } else {
       all.push({
         slot, pid: mine, dir, state, ts: Date.now(), title: sessionTitle,
@@ -213,22 +253,18 @@ export const CodexStatusPlugin: Plugin = async ({ directory, client }) => {
       return
     }
 
-    if (!pending || pending.id !== req.permissionID) return
-
-    try {
-      await client.postSessionIdPermissionsPermissionId({
-        path: { id: req.sessionID, permissionID: req.permissionID },
-        body: { response: req.response },
-      })
-      await log(`permission ${req.permissionID} -> ${req.response} (from pad)`)
-      pending = null
-      publish("busy")
-    } catch (e: any) {
-      await log(`failed to answer permission ${req.permissionID}: ${e?.message || e}`)
-    }
+    if (req.type !== "permission" || !["once", "always", "reject"].includes(req.response)) return
+    const pending = permissions.get(req.permissionID)
+    if (!pending || pending.sessionID !== req.sessionID) return
+    await answerPermission(pending, req.response)
   }
 
-  const actionTimer = setInterval(() => void pollActions(), ACTION_POLL_MS)
+  const actionTimer = setInterval(() => {
+    void pollActions()
+    // The pad can arm YOLO AFTER permission.asked fired. Check shared state
+    // even when no action file was written, so already-open prompts are handled.
+    void maybeYolo()
+  }, ACTION_POLL_MS)
   if (typeof (actionTimer as any).unref === "function") (actionTimer as any).unref()
 
   // Heartbeat: lets the daemon expire this session even if we are SIGKILLed
@@ -240,6 +276,9 @@ export const CodexStatusPlugin: Plugin = async ({ directory, client }) => {
   const release = () => {
     clearInterval(beat)
     clearInterval(actionTimer)
+    process.removeListener("exit", release)
+    process.removeListener("SIGINT", release)
+    process.removeListener("SIGTERM", release)
     writeClaims(readClaims().filter((c) => c.pid !== mine && alive(c.pid)))
   }
   process.once("exit", release)
@@ -252,6 +291,7 @@ export const CodexStatusPlugin: Plugin = async ({ directory, client }) => {
   const isSub = (sid?: string) => !!sid && subagents.has(sid)
 
   return {
+    dispose: async () => release(),
     "permission.ask": async (input: any, output: any) => {
       // YOLO mode: auto-approve everything while armed. Deliberately audited,
       // and the daemon expires it automatically so it cannot be left on.
@@ -261,7 +301,7 @@ export const CodexStatusPlugin: Plugin = async ({ directory, client }) => {
           output.status = "allow"
           const what = input?.type || input?.title || "permission"
           y.audit(`AUTO-APPROVED ${what} :: ${String(input?.title || "").slice(0, 120)} [${path.basename(dir)}]`)
-          console.log(`[codex-status] YOLO auto-approved: ${what}`)
+          void log(`YOLO auto-approved: ${what}`)
           return
         }
       } catch {}
@@ -269,7 +309,7 @@ export const CodexStatusPlugin: Plugin = async ({ directory, client }) => {
       // Record what is waiting so the pad can answer it. We do not set
       // output.status -- the prompt still behaves normally on screen.
       if (input?.id && input?.sessionID) {
-        pending = { id: input.id, sessionID: input.sessionID }
+        permissions.set(input.id, { id: input.id, sessionID: input.sessionID })
         publish("approval")
       }
     },
@@ -292,7 +332,16 @@ export const CodexStatusPlugin: Plugin = async ({ directory, client }) => {
         }
         case "session.deleted": {
           const info = event.properties?.info
-          if (info?.id) subagents.delete(info.id)
+          if (info?.id) {
+            subagents.delete(info.id)
+            for (const p of permissions.values()) {
+              if (p.sessionID === info.id) {
+                permissions.delete(p.id)
+                yoloRetryAt.delete(p.id)
+              }
+            }
+            publish(current === "approval" ? "busy" : current)
+          }
           break
         }
         case "session.status": {
@@ -300,14 +349,12 @@ export const CodexStatusPlugin: Plugin = async ({ directory, client }) => {
           const s = event.properties?.status
           const t = typeof s === "object" ? (s as any)?.type : s
           if (t === "busy" || t === "running") {
-            pending = null
             publish("busy")
           }
           break
         }
         case "session.idle":
           if (!isSub(event.properties?.sessionID)) {
-            pending = null
             publish("idle")
           }
           break
@@ -324,22 +371,23 @@ export const CodexStatusPlugin: Plugin = async ({ directory, client }) => {
           const id = p.id || p.permissionID
           const sessionID = p.sessionID
           if (id && sessionID) {
-            pending = { id, sessionID }
+            permissions.set(id, { id, sessionID })
             // YOLO answers immediately over the API. Doing it here rather than
             // in the permission.ask hook means it does not depend on a hook
             // that this build never calls.
-            void maybeYolo(id, sessionID)
           } else {
             void log(`permission event without id: ${JSON.stringify(Object.keys(p))}`)
           }
           publish("approval")
+          void maybeYolo()
           break
         }
 
         case "permission.replied": {
           const p = event.properties || {}
-          if (!p.permissionID || (pending && pending.id === p.permissionID)) {
-            pending = null
+          const id = p.requestID || p.permissionID || p.id
+          if (id && permissions.delete(id)) {
+            yoloRetryAt.delete(id)
             publish(current === "approval" ? "busy" : current)
           }
           break

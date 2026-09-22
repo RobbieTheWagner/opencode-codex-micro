@@ -27,6 +27,13 @@ adapters. See [docs/adapters.md](docs/adapters.md).
 | YOLO | `ACT06` | auto-approve everything for 15 min (board turns red) |
 | wide key | `ACT10`+`ACT11` | hold-to-talk dictation into the prompt |
 
+The approve/deny keys answer the oldest pending request in the selected session,
+including requests from its subagents. When multiple sessions are waiting, focus
+the one to answer. YOLO handles both already-open and newly arriving prompts.
+Failed replies leave the request pending and show an error toast in OpenCode.
+
+Run the permission-handling regression tests with `bun test tests/permissions.test.ts`.
+
 ## Requirements
 
 - macOS (Apple Silicon or Intel)
