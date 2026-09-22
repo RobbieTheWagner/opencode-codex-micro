@@ -22,7 +22,8 @@ const HID = require("node-hid")
 const { CM2 } = require("../vendor/cm2-agent-keys/src/device.js")
 const P = require("./paths.js")
 const yolo = require("./yolo.js")
-const { assignSlots } = require("./tabs.js")
+const herdr = require("./herdr.js")
+const { assignSlots, normTitle, titleMatches } = require("./tabs.js")
 
 
 const VID = 0x303a, PID = 0x8360, USAGE_PAGE = 0xff00
@@ -81,13 +82,16 @@ function requestDictation(phase) {
   let t
   if (phase === "start") {
     const { target } = pickTarget(live)
-    // A session with no title yet shows as plain "OpenCode" in the tab title,
+    // Under Ghostty a session with no title yet shows as plain "OpenCode",
     // which matches nothing. Fall back to the untitled session in that case.
+    // herdr matches on pane id, so it never needs this.
     let fallback = null
-    const focused = focusedGhosttyTitle()
-    if (!target && focused && norm(focused) === "opencode") {
-      const untitled = live.filter((c) => !c.title)
-      if (untitled.length === 1) fallback = untitled[0]
+    if (!target) {
+      const focused = focusedGhosttyTitle()
+      if (focused && normTitle(focused) === "opencode") {
+        const untitled = live.filter((c) => !c.title)
+        if (untitled.length === 1) fallback = untitled[0]
+      }
     }
     t = target || fallback || live[0]
     micTargetPid = t.pid
@@ -113,6 +117,65 @@ function requestDictation(phase) {
     fs.writeFileSync(tmp, JSON.stringify(req, null, 2))
     fs.renameSync(tmp, ACTION_FILE)
     log(`dictation ${phase} -> slot ${t.slot} (${path.basename(t.dir)}) pid ${t.pid}`)
+  } catch (e) {
+    log("failed to write action file:", e?.message || e)
+  }
+}
+
+/**
+ * Answer a pending permission prompt from the pad.
+ *
+ * The daemon sees the key press but holds no agent client, so it leaves the
+ * request in the action file for the owning plugin to execute (the same channel
+ * dictation uses).
+ *
+ * Targeting matters here in a way it does not for dictation: answering the
+ * WRONG session's prompt is destructive. So we only ever act on a session that
+ * actually has something pending, and when several do we require the focused
+ * one to break the tie rather than picking arbitrarily.
+ *
+ * @param {"once"|"always"|"reject"} response
+ */
+function requestPermissionResponse(response) {
+  const live = liveClaims()
+  const waiting = live.filter((c) => c.pending && c.pending.id)
+  if (!waiting.length) return log(`${response}: nothing is waiting for approval`)
+
+  let t = waiting[0]
+  if (waiting.length > 1) {
+    const { target, focused } = pickTarget(live)
+    t = (target && waiting.find((c) => c.pid === target.pid)) || null
+    if (!t) {
+      return log(
+        `${response}: ${waiting.length} prompts waiting and the focused session ` +
+          `(${focused || "unknown"}) is not one of them — focus the one to answer`,
+      )
+    }
+  }
+
+  const caps = t.caps || {}
+  if (caps.permissions !== "api") {
+    return log(
+      `${response}: session ${t.pid} (${t.agent || "unknown"}) cannot be answered ` +
+        `remotely (caps.permissions=${caps.permissions || "none"})`,
+    )
+  }
+
+  const req = {
+    type: "permission",
+    pid: t.pid,
+    slot: t.slot,
+    permissionID: t.pending.id,
+    sessionID: t.pending.sessionID,
+    response,
+    nonce: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    ts: Date.now(),
+  }
+  try {
+    const tmp = `${ACTION_FILE}.tmp`
+    fs.writeFileSync(tmp, JSON.stringify(req, null, 2))
+    fs.renameSync(tmp, ACTION_FILE)
+    log(`permission ${req.permissionID} -> ${response} (${path.basename(t.dir)}) pid ${t.pid}`)
   } catch (e) {
     log("failed to write action file:", e?.message || e)
   }
@@ -199,7 +262,7 @@ let lastAssignment = new Map()
 
 function desired() {
   const live = liveClaims()
-  const { assignment } = assignSlots(live)
+  const { assignment } = assignSlots(live, log)
   lastAssignment = assignment
 
   const bySlot = new Map()
@@ -224,7 +287,7 @@ function desired() {
 /** Focus by ABSOLUTE tab position; Cmd+N counts every tab, not just opencode ones. */
 function focusGhosttyTab(tabIndex) {
   const n = tabIndex
-  if (!n || n < 1 || n > 9) return
+  if (!n || n < 1 || n > 9) return false
   execFile(
     "osascript",
     [
@@ -235,6 +298,80 @@ function focusGhosttyTab(tabIndex) {
     ],
     () => {},
   )
+  return true
+}
+
+/**
+ * Focus the session behind a slot assignment, using whichever backend placed
+ * it. herdr addresses the pane directly, so it works past the 9-tab ceiling
+ * that the Cmd+N keystroke imposes and lands on the right split.
+ */
+function focusAssignment(hit) {
+  if (hit.backend === "herdr" && hit.paneId) return herdr.focusPane(hit.paneId)
+  if (hit.tabIndex) return focusGhosttyTab(hit.tabIndex)
+  return false
+}
+
+/**
+ * Which live session currently has focus, if we can tell.
+ *
+ * herdr reports this exactly (`focused` on the agent list, matched back to the
+ * claim by pane id). The Ghostty path can only compare the focused window
+ * title against session titles, which is fuzzy and fails outright for a session
+ * that has not been named yet.
+ */
+function focusedGhosttyTitle() {
+  try {
+    const out = execFileSync(
+      "osascript",
+      [
+        "-e",
+        `tell application "System Events" to tell process "Ghostty"
+           try
+             return name of front window
+           end try
+         end tell`,
+      ],
+      { encoding: "utf8", timeout: 4000 },
+    )
+    return out.trim() || null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Pick the live session the user is looking at.
+ *
+ * @returns {{ target: object|null, focused: string|null }}
+ */
+function pickTarget(live) {
+  // herdr: exact, and cheap.
+  if (herdr.available()) {
+    const pane = herdr.focusedAgent()
+    if (pane) {
+      const label = pane.terminal_title_stripped || pane.terminal_title || pane.pane_id
+      const target =
+        live.find((c) => c.herdr && c.herdr.paneId === pane.pane_id) ||
+        // Same title fallback the slot assignment uses, for sessions that
+        // cannot report a pane id.
+        live.find((c) => !(c.herdr && c.herdr.paneId) && c.title && titleMatches(label, c.title)) ||
+        null
+      if (target) return { target, focused: label }
+      // Focused pane is not one of ours (a shell, say). Say so rather than
+      // guessing a neighbour — answering the wrong prompt is destructive.
+      return { target: null, focused: label }
+    }
+  }
+
+  const focused = focusedGhosttyTitle()
+  if (!focused) return { target: null, focused: null }
+  const want = normTitle(focused)
+  const target =
+    live.find((c) => c.title && normTitle(c.title) === want) ||
+    live.find((c) => c.title && (want.startsWith(normTitle(c.title)) || normTitle(c.title).startsWith(want))) ||
+    null
+  return { target, focused }
 }
 
 let dev = null
@@ -286,11 +423,33 @@ async function connect() {
       }
     }
     if (!hit) return log(`key AG${m[1]}: no session on that slot`)
-    if (!hit.tabIndex) return log(`key AG${m[1]}: session has no known tab`)
-    log(`key AG${m[1]} -> focus tab #${hit.tabIndex} (${hit.tabTitle})`)
-    focusGhosttyTab(hit.tabIndex)
+    const where = hit.backend === "herdr" ? `pane ${hit.paneId}` : `tab #${hit.tabIndex}`
+    if (!focusAssignment(hit)) {
+      return log(`key AG${m[1]}: session has no focusable tab or pane`)
+    }
+    log(`key AG${m[1]} -> focus ${where} (${hit.tabTitle || "untitled"})`)
   })
   d.on("error", () => {})
+  // A successful lighting RPC does not mean any physical key renders it:
+  // Input can strip the vendor keycodes when saving a user layer. Inspect the
+  // keymap from this process, whose HID permission can differ from the CLI's.
+  try {
+    log("device status:", JSON.stringify(await d.status()))
+    const km = await d.readKeymap()
+    const profile = km.profiles.find((p) => p.id === km.activeProfileId) || km.profiles[0]
+    log("device keymap:", JSON.stringify({
+      activeProfileId: km.activeProfileId,
+      profile: profile?.name,
+      layers: profile?.layers.map((layer) => ({
+        id: layer.id,
+        name: layer.name,
+        lights: layer.lights,
+        agentKeys: (layer.layout?.keymap || []).flat().filter((key) => /^KV_OAI_AG\d\d$/.test(key)),
+      })),
+    }))
+  } catch (e) {
+    log("device keymap inspection failed:", e?.message || e)
+  }
   return d
 }
 
@@ -346,7 +505,7 @@ async function tick() {
     if (sig !== lastPainted) {
       const desc = [...(bySlot || new Map()).entries()]
         .sort((a, b) => a[0] - b[0])
-        .map(([slot, e]) => `${slot}=${e.claim.state}(${e.tabIndex ? "tab" + e.tabIndex : "?"})`)
+        .map(([slot, e]) => `${slot}=${e.claim.state}(${e.paneId || (e.tabIndex ? "tab" + e.tabIndex : "?")})`)
         .join(" ")
       log(`painted: ${desc || "(all off)"}`)
     }

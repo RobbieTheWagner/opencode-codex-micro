@@ -34,6 +34,8 @@ const ACTION_POLL_MS = 150
 
 type State = "idle" | "busy" | "approval" | "error"
 type Pending = { id: string; sessionID: string }
+/** Exact pane identity when this session runs inside herdr. */
+type HerdrPane = { paneId: string; tabId: string | null; workspaceId: string | null }
 type Claim = {
   slot: number
   pid: number
@@ -41,7 +43,9 @@ type Claim = {
   state: State
   ts: number
   title?: string
-  caps?: { dictation?: boolean }
+  agent?: string
+  herdr?: HerdrPane | null
+  caps?: { dictation?: boolean; permissions?: string; textInsert?: string }
   pending?: Pending | null
   pendingTs?: number
 }
@@ -124,13 +128,31 @@ export const CodexStatusPlugin: Plugin = async ({ directory, client }) => {
   const dir = directory || process.cwd()
   const mine = process.pid
 
-  // Slot numbers are assigned by the daemon from Ghostty tab order
-  // (scripts/codex-tabs.js), so every session just registers itself. The
-  // `slot` field here is vestigial and ignored downstream.
+  /**
+   * Pane identity, read from the environment herdr exports into every pane.
+   *
+   * Recording this is what lets the daemon skip title matching entirely: it can
+   * look this pane up in `herdr agent list` by id. The daemon runs under
+   * launchd and has no herdr env of its own, so the link has to be established
+   * here, in the process that actually lives in the pane.
+   */
+  const paneId = process.env.HERDR_PANE_ID
+  const herdrPane: HerdrPane | null =
+    process.env.HERDR_ENV && paneId
+      ? {
+          paneId,
+          tabId: process.env.HERDR_TAB_ID || null,
+          workspaceId: process.env.HERDR_WORKSPACE_ID || null,
+        }
+      : null
+
+  // Slot numbers are assigned by the daemon from tab order (src/tabs.js), so
+  // every session just registers itself. The `slot` field here is vestigial
+  // and ignored downstream.
   const claims = readClaims().filter((c) => alive(c.pid))
   const slot = -1
 
-  claims.push({ slot, pid: mine, dir, state: "idle", ts: Date.now() })
+  claims.push({ slot, pid: mine, dir, state: "idle", ts: Date.now(), herdr: herdrPane })
   writeClaims(claims)
 
   let current: State = "idle"
@@ -197,8 +219,8 @@ export const CodexStatusPlugin: Plugin = async ({ directory, client }) => {
       checkingYolo = false
     }
   }
-  // opencode titles the terminal "OC | <session title>"; the daemon matches
-  // this against the focused Ghostty tab to target the right session.
+  // opencode titles the terminal "OC | <session title>". Only the Ghostty
+  // backend needs this -- under herdr the daemon matches on pane id instead.
   let sessionTitle = ""
 
   function publish(state: State) {
@@ -212,6 +234,7 @@ export const CodexStatusPlugin: Plugin = async ({ directory, client }) => {
       me.ts = Date.now()
       me.title = sessionTitle
       me.agent = "opencode"
+      me.herdr = herdrPane
       me.caps = { dictation: !!dictation, permissions: "api", textInsert: "api" }
       if (pending) me.pendingTs = me.pending?.id === pending.id ? me.pendingTs || Date.now() : Date.now()
       else delete me.pendingTs
@@ -220,6 +243,7 @@ export const CodexStatusPlugin: Plugin = async ({ directory, client }) => {
       all.push({
         slot, pid: mine, dir, state, ts: Date.now(), title: sessionTitle,
         agent: "opencode",
+        herdr: herdrPane,
         caps: { dictation: !!dictation, permissions: "api", textInsert: "api" },
         pending, pendingTs: pending ? Date.now() : undefined,
       })

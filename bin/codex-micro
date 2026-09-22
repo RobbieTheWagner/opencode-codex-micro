@@ -84,12 +84,18 @@ async function checkDeviceOpen() {
 }
 
 function checkAccessibility() {
+  // Only the Ghostty backend needs this. Under herdr, tab order and focusing
+  // both go over the socket API -- but only while that API actually answers,
+  // so require a working call, not merely a socket file.
+  const herdr = require("../src/herdr.js")
   const r = sh("/usr/bin/osascript", [
     "-e",
     'tell application "System Events" to get name of first process whose frontmost is true',
   ])
-  return r.status === 0
-    ? { ok: true, msg: "granted" }
+  if (r.status === 0) return { ok: true, msg: "granted" }
+  const herdrWorking = herdr.available() && herdr.agents().length > 0 && !herdr.error()
+  return herdrWorking
+    ? { ok: true, msg: "denied — not needed, herdr is providing tab order" }
     : { ok: false, msg: "denied — needed to read Ghostty tab order" }
 }
 
@@ -143,6 +149,20 @@ async function checkKeymap() {
   }
 }
 
+/**
+ * herdr is optional, so "not running" is not a failure. A herdr that IS running
+ * but cannot be talked to is worth flagging, though: it silently disables the
+ * better of the two tab backends.
+ */
+function checkHerdr() {
+  const herdr = require("../src/herdr.js")
+  if (!herdr.available()) return { ok: true, msg: "not running (using Ghostty tab order)" }
+  const panes = herdr.agents()
+  const err = herdr.error()
+  if (err) return { ok: false, msg: err.split("\n")[0] }
+  return { ok: true, msg: `${panes.length} agent pane(s)` }
+}
+
 async function doctor() {
   console.log(c.b("\ncodex-micro doctor\n"))
   const rows = []
@@ -151,6 +171,7 @@ async function doctor() {
   push("Codex Micro device", checkDevice())
   push("device RPC (Input Monitoring)", await checkDeviceOpen())
   push("Accessibility", checkAccessibility())
+  push("herdr (optional)", checkHerdr())
   push("agent keycodes on a user layer", await checkKeymap())
   push("opencode plugin", checkPlugin())
   push("status daemon", checkAgent(AGENTS.daemon))
@@ -330,7 +351,8 @@ async function setup(args) {
   console.log(c.b("\nRemaining manual steps (macOS will not let us script these):\n"))
   console.log("  • Input Monitoring — System Settings → Privacy & Security → Input Monitoring")
   console.log(`    add: ${nodeBinary()}`)
-  console.log("  • Accessibility — same pane, Accessibility (for Ghostty tab order)")
+  console.log("  • Accessibility — same pane, Accessibility (for Ghostty tab order;")
+  console.log("    not required if you run your agents inside herdr)")
   console.log("  • Restart any running opencode sessions to load the plugin")
   console.log("\nThen run: codex-micro doctor\n")
 }

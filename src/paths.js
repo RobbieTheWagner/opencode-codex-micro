@@ -95,7 +95,14 @@ const bin = {
   whisperCli: () => which("whisper-cli"),
   whisperStream: () => which("whisper-stream"),
   osascript: () => "/usr/bin/osascript",
+  // HERDR_BIN_PATH is exported into every herdr pane; the daemon runs under
+  // launchd and never sees it, so fall back to a normal path search.
+  herdr: () => which("herdr", process.env.HERDR_BIN_PATH ? [process.env.HERDR_BIN_PATH] : []),
 }
+
+/** Default herdr control socket; the daemon cannot rely on HERDR_SOCKET_PATH. */
+const HERDR_SOCKET =
+  process.env.HERDR_SOCKET_PATH || path.join(os.homedir(), ".config", "herdr", "herdr.sock")
 
 function modelPath(name = config().whisperModel) {
   return path.join(MODEL_DIR, name)
@@ -118,6 +125,7 @@ module.exports = {
   YOLO_FILE,
   MIC_CACHE,
   CONFIG_FILE,
+  HERDR_SOCKET,
   DEFAULTS,
   ensureDirs,
   config,

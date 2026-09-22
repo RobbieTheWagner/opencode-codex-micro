@@ -20,7 +20,7 @@ const CHANNEL_RPC = 2;
 const MAX_CHUNK = 61;             // 64-byte report minus 3 header bytes
 
 /** LED animation effects understood by the firmware. */
-const Effect = { off: 0, solid: 1, snake: 2, rainbow: 3, breath: 4, gradient: 5 };
+const Effect = { off: 0, solid: 1, snake: 2, rainbow: 3, breath: 4, gradient: 5, shallowBreath: 6 };
 
 /** \uXXXX-escape non-ASCII so every byte on the wire is 7-bit safe. */
 function escapeUnicode(s) {

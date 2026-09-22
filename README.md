@@ -5,8 +5,8 @@ display and control surface for your coding agents: per-session status LEDs,
 physical approve/deny, a YOLO auto-approve key, and hold-to-talk dictation.
 
 Each agent session claims one of the six translucent Agent keys and colours it
-with that session's live state. Pressing a key jumps to that session's Ghostty
-tab.
+with that session's live state. Pressing a key jumps to that session's terminal
+tab, whether that is a [herdr](https://herdr.dev) pane or a Ghostty tab.
 
 Works with **any agent that can run a command on an event** —
 [opencode](https://opencode.ai) (deepest integration, via its plugin API),
@@ -39,7 +39,7 @@ Run the permission-handling regression tests with `bun test tests/permissions.te
 - macOS (Apple Silicon or Intel)
 - A Codex Micro / Creator Micro 2 on firmware **≥ 0.6.0**, connected by USB
 - Node 18+
-- Ghostty (for tab mapping and focus)
+- herdr **or** Ghostty (for tab mapping and focus — see below)
 - Optional, for dictation: `brew install whisper-cpp sox`
 
 ## Supported agents
@@ -71,7 +71,8 @@ downloads the whisper model, and installs the LaunchAgents.
 
 - **Input Monitoring** → System Settings → Privacy & Security → Input
   Monitoring → add your node binary (`doctor` prints the path).
-- **Accessibility** → same pane → needed to read Ghostty tab order.
+- **Accessibility** → same pane → needed to read Ghostty tab order. Not
+  required if you run your agents inside herdr.
 - **Restart running opencode sessions** so they load the plugin.
 
 Microphone access is *not* granted to a binary — see below.
@@ -88,9 +89,32 @@ dying process cannot complete an async HID write, so any "turn my own LED off
 on exit" design eventually strands a key lit. The daemon instead expires
 sessions by pid liveness and heartbeat age, so crashes self-heal in ~2 s.
 
-**Slots follow Ghostty tab order**, recomputed continuously: the first six tabs
-running opencode get slots 0–5, other tabs are skipped for numbering, and
-focusing uses absolute tab position. Move a tab and the lights re-map.
+**Slots follow tab order**, recomputed continuously: the first six tabs running
+an agent get slots 0–5. Move a tab and the lights re-map.
+
+Tab order comes from one of two backends, picked automatically per tick:
+
+| | herdr | Ghostty |
+|---|---|---|
+| Source | `herdr agent list` over the socket API | accessibility API |
+| Session matching | exact — each session reports its own `HERDR_PANE_ID` | fuzzy — compares truncated tab titles |
+| Focus | `herdr agent focus <pane>`, targets the exact pane | `Cmd+N`, absolute tab position, max 9 tabs |
+| Permission needed | none | Accessibility |
+
+herdr is preferred when its server is reachable, and the two can be mixed:
+sessions in herdr panes are assigned first, then any remaining sessions are
+matched against Ghostty tabs. A session running in a herdr pane needs no setup —
+herdr exports the pane id into the environment and the plugin records it.
+
+Sessions whose agent integration cannot report a pane id (a shell-hook adapter,
+or an opencode session still running an older plugin build) fall back to title
+matching within herdr, so they still light up; restarting them upgrades the
+match to an exact one.
+
+If herdr is running but its API cannot be reached — most commonly a
+`protocol_mismatch` after the CLI auto-updates but the server has not been
+restarted — the daemon logs the reason once and falls back to Ghostty.
+`codex-micro doctor` reports it too.
 
 ### Why the agent keys need a keymap write
 
@@ -132,6 +156,13 @@ State (slots, backups, logs, model) lives in
 - **Plugin changes only apply to sessions started afterwards.**
 - **Don't edit the agent layer in Work Louder Input** — it strips the vendor
   keycodes. Re-run `codex-micro keys` if lights stop working.
+- If sessions are mapped correctly and the daemon logs successful `painted`
+  updates but the agent keys stay dark, quit Work Louder Input, unplug and
+  reconnect the pad, then wait a few seconds for the daemon to repaint. Its
+  connection logs include firmware status and each layer's agent keycodes to
+  help distinguish a device runtime issue from a missing keymap. A terminal's
+  `doctor` HID permission result can differ from the LaunchAgent's; check the
+  daemon log too.
 - **Don't hand-edit the LaunchAgent plists.** Changing a plist makes macOS
   re-evaluate the job and revoke its Input Monitoring grant; writes then fail
   with `(iokit/common) not permitted`.
