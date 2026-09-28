@@ -146,12 +146,63 @@ function focusedAgent() {
 }
 
 /**
- * Focus a pane by id. Fire-and-forget: a key press must never block the HID
- * read loop waiting on a subprocess.
+ * The macOS .app bundle hosting the herdr client, e.g. "/Applications/Ghostty.app".
+ *
+ * The herdr server is daemonised (ppid 1), so it tells us nothing. Each
+ * attached client, though, is a child of the terminal it runs in
+ * (terminal -> login -> shell -> herdr). Walk each client's ancestors to the
+ * first process living inside an .app bundle. Terminal-agnostic: works for
+ * Ghostty, iTerm2, WezTerm, Terminal.app, etc. Cached briefly since a key
+ * press should not pay for a ps scan every time.
+ */
+let hostCache = { app: null, at: 0 }
+const HOST_TTL_MS = 10000
+function hostApp() {
+  if (Date.now() - hostCache.at < HOST_TTL_MS) return hostCache.app
+  let app = null
+  try {
+    const out = execFileSync("/bin/ps", ["-axo", "pid=,ppid=,comm="], { encoding: "utf8", timeout: 2000 })
+    app = hostAppFromPs(out)
+  } catch {}
+  hostCache = { app, at: Date.now() }
+  return app
+}
+
+/** Pure half of hostApp(): `ps -axo pid=,ppid=,comm=` output -> .app path or null. */
+function hostAppFromPs(out) {
+  const procs = new Map()
+  for (const line of `${out || ""}`.split("\n")) {
+    const m = line.match(/^\s*(\d+)\s+(\d+)\s+(.*)$/)
+    if (m) procs.set(+m[1], { ppid: +m[2], comm: m[3].trim() })
+  }
+  for (const [pid, p] of procs) {
+    if (!/(^|\/)herdr$/.test(p.comm) || p.ppid <= 1) continue // skip the daemonised server
+    let cur = procs.get(pid)
+    for (let hops = 0; cur && cur.ppid > 1 && hops < 32; hops++) {
+      cur = procs.get(cur.ppid)
+      const b = cur && cur.comm.match(/^(.*?\.app)\/Contents\/MacOS\//)
+      if (b) return b[1]
+    }
+  }
+  return null
+}
+
+/** Bring the terminal app running herdr to the front. Fire-and-forget. */
+function activateHost() {
+  const app = hostApp()
+  execFile("/usr/bin/open", app ? [app] : ["-a", "Ghostty"], () => {})
+  return !!app
+}
+
+/**
+ * Focus a pane by id, raising the host terminal first so the press works from
+ * any app. Fire-and-forget: a key press must never block the HID read loop
+ * waiting on a subprocess.
  */
 function focusPane(paneId) {
   const herdr = P.bin.herdr()
   if (!herdr || !paneId) return false
+  activateHost()
   execFile(
     herdr,
     ["agent", "focus", paneId],
@@ -184,4 +235,4 @@ function error() {
   return lastError
 }
 
-module.exports = { available, agents, focusedAgent, focusPane, selfPane, call, reset, error }
+module.exports = { available, agents, focusedAgent, focusPane, hostApp, hostAppFromPs, activateHost, selfPane, call, reset, error }
