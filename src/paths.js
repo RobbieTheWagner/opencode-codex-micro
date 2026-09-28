@@ -28,18 +28,31 @@ function isEphemeral(dir = ROOT) {
   return /[\\/](_npx|\.npm[\\/]_cacache|npm-cache)[\\/]/.test(dir) || dir.startsWith(os.tmpdir())
 }
 
-/** Per-user state: slot file, caches, logs, backups. Never in the repo. */
-const STATE_DIR =
+/**
+ * Per-user state: slot file, caches, logs, backups. Never in the repo.
+ *
+ * Resolved on every access, not captured at load. Module caches are shared
+ * (bun runs all test files in one process), so a snapshot taken by whichever
+ * file loaded this first would pin everyone else to that directory -- and if
+ * that was before CODEX_MICRO_STATE was set, to the user's LIVE state.
+ */
+const stateDir = () =>
   process.env.CODEX_MICRO_STATE || path.join(os.homedir(), ".local", "state", "opencode-codex-micro")
-const LOG_DIR = path.join(STATE_DIR, "logs")
-const BACKUP_DIR = path.join(STATE_DIR, "backups")
-const MODEL_DIR = path.join(STATE_DIR, "models")
-
-const SLOT_FILE = path.join(STATE_DIR, "slots.json")
-const ACTION_FILE = path.join(STATE_DIR, "action.json")
-const YOLO_FILE = path.join(STATE_DIR, "yolo.json")
-const MIC_CACHE = path.join(STATE_DIR, "mic.json")
-const CONFIG_FILE = path.join(STATE_DIR, "config.json")
+const inState = (...p) => () => path.join(stateDir(), ...p)
+/** herdr's control socket is included: the daemon cannot rely on HERDR_SOCKET_PATH. */
+const S = {
+  HERDR_SOCKET: () =>
+    process.env.HERDR_SOCKET_PATH || path.join(os.homedir(), ".config", "herdr", "herdr.sock"),
+  STATE_DIR: stateDir,
+  LOG_DIR: inState("logs"),
+  BACKUP_DIR: inState("backups"),
+  MODEL_DIR: inState("models"),
+  SLOT_FILE: inState("slots.json"),
+  ACTION_FILE: inState("action.json"),
+  YOLO_FILE: inState("yolo.json"),
+  MIC_CACHE: inState("mic.json"),
+  CONFIG_FILE: inState("config.json"),
+}
 
 const DEFAULTS = {
   whisperPort: 8178,
@@ -50,12 +63,12 @@ const DEFAULTS = {
 }
 
 function ensureDirs() {
-  for (const d of [STATE_DIR, LOG_DIR, BACKUP_DIR, MODEL_DIR]) fs.mkdirSync(d, { recursive: true })
+  for (const d of [S.STATE_DIR(), S.LOG_DIR(), S.BACKUP_DIR(), S.MODEL_DIR()]) fs.mkdirSync(d, { recursive: true })
 }
 
 function config() {
   try {
-    return { ...DEFAULTS, ...JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8")) }
+    return { ...DEFAULTS, ...JSON.parse(fs.readFileSync(S.CONFIG_FILE(), "utf8")) }
   } catch {
     return { ...DEFAULTS }
   }
@@ -64,7 +77,7 @@ function config() {
 function saveConfig(patch) {
   ensureDirs()
   const next = { ...config(), ...patch }
-  fs.writeFileSync(CONFIG_FILE, JSON.stringify(next, null, 2))
+  fs.writeFileSync(S.CONFIG_FILE(), JSON.stringify(next, null, 2))
   return next
 }
 
@@ -100,12 +113,8 @@ const bin = {
   herdr: () => which("herdr", process.env.HERDR_BIN_PATH ? [process.env.HERDR_BIN_PATH] : []),
 }
 
-/** Default herdr control socket; the daemon cannot rely on HERDR_SOCKET_PATH. */
-const HERDR_SOCKET =
-  process.env.HERDR_SOCKET_PATH || path.join(os.homedir(), ".config", "herdr", "herdr.sock")
-
 function modelPath(name = config().whisperModel) {
-  return path.join(MODEL_DIR, name)
+  return path.join(S.MODEL_DIR(), name)
 }
 
 function whisperUrl(pathname = "/inference") {
@@ -116,16 +125,6 @@ module.exports = {
   ROOT,
   INSTALL_DIR,
   isEphemeral,
-  STATE_DIR,
-  LOG_DIR,
-  BACKUP_DIR,
-  MODEL_DIR,
-  SLOT_FILE,
-  ACTION_FILE,
-  YOLO_FILE,
-  MIC_CACHE,
-  CONFIG_FILE,
-  HERDR_SOCKET,
   DEFAULTS,
   ensureDirs,
   config,
@@ -135,3 +134,5 @@ module.exports = {
   modelPath,
   whisperUrl,
 }
+// STATE_DIR, SLOT_FILE, HERDR_SOCKET, ... read like constants but resolve live.
+for (const [k, get] of Object.entries(S)) Object.defineProperty(module.exports, k, { get, enumerable: true })

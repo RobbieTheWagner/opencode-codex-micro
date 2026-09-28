@@ -19,7 +19,6 @@ const { execFileSync } = require("node:child_process")
 
 const P = require("./paths.js")
 
-const CACHE = P.MIC_CACHE
 const MODEL = P.modelPath()
 const STREAM_BIN = P.bin.whisperStream()
 
@@ -89,13 +88,13 @@ if (require.main === module) {
   if (index === -1) {
     console.log("\nCould not match the macOS default to an SDL device; leaving whisper-stream on its own default.")
     try {
-      fs.unlinkSync(CACHE)
+      fs.unlinkSync(P.MIC_CACHE)
     } catch {}
     process.exit(1)
   }
 
-  fs.writeFileSync(CACHE, JSON.stringify({ index, name: devices[index], ts: Date.now() }, null, 2))
-  console.log(`\ncached -> ${CACHE}: capture #${index} '${devices[index]}'`)
+  fs.writeFileSync(P.MIC_CACHE, JSON.stringify({ index, name: devices[index], ts: Date.now() }, null, 2))
+  console.log(`\ncached -> ${P.MIC_CACHE}: capture #${index} '${devices[index]}'`)
 }
 
-module.exports = { detect, sdlDevices, macDefaultInput, CACHE }
+module.exports = { detect, sdlDevices, macDefaultInput, get CACHE() { return P.MIC_CACHE } }

@@ -15,13 +15,12 @@ const path = require("node:path")
 
 const P = require("./paths.js")
 
-const STATE_FILE = P.YOLO_FILE
-const AUDIT_LOG = path.join(P.LOG_DIR, "yolo.log")
+const auditLog = () => path.join(P.LOG_DIR, "yolo.log")
 const DEFAULT_TTL_MS = (P.config().yoloTtlMinutes || 15) * 60 * 1000
 
 function read() {
   try {
-    const s = JSON.parse(fs.readFileSync(STATE_FILE, "utf8"))
+    const s = JSON.parse(fs.readFileSync(P.YOLO_FILE, "utf8"))
     if (!s || !s.enabled) return { enabled: false }
     if (s.expiresAt && Date.now() > s.expiresAt) return { enabled: false, expired: true, was: s }
     return s
@@ -32,10 +31,10 @@ function read() {
 
 function write(state) {
   try {
-    fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true })
-    const tmp = `${STATE_FILE}.tmp`
+    fs.mkdirSync(path.dirname(P.YOLO_FILE), { recursive: true })
+    const tmp = `${P.YOLO_FILE}.tmp`
     fs.writeFileSync(tmp, JSON.stringify(state, null, 2))
-    fs.renameSync(tmp, STATE_FILE)
+    fs.renameSync(tmp, P.YOLO_FILE)
   } catch {}
 }
 
@@ -59,9 +58,12 @@ function disable(reason = "toggled off") {
 
 function audit(line) {
   try {
-    fs.mkdirSync(path.dirname(AUDIT_LOG), { recursive: true })
-    fs.appendFileSync(AUDIT_LOG, `${new Date().toISOString()} ${line}\n`)
+    fs.mkdirSync(path.dirname(auditLog()), { recursive: true })
+    fs.appendFileSync(auditLog(), `${new Date().toISOString()} ${line}\n`)
   } catch {}
 }
 
-module.exports = { read, isActive, enable, disable, audit, STATE_FILE, AUDIT_LOG, DEFAULT_TTL_MS }
+module.exports = { read, isActive, enable, disable, audit, DEFAULT_TTL_MS,
+  get STATE_FILE() { return P.YOLO_FILE },
+  get AUDIT_LOG() { return auditLog() },
+}

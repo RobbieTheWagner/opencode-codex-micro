@@ -28,8 +28,6 @@ const { assignSlots, normTitle, titleMatches } = require("./tabs.js")
 
 const VID = 0x303a, PID = 0x8360, USAGE_PAGE = 0xff00
 const SLOTS = 6
-const SLOT_FILE = P.SLOT_FILE
-const ACTION_FILE = P.ACTION_FILE
 
 // Action keys. Keycaps are movable; these were measured on this device.
 const ACT_APPROVE = P.config().keys.approve
@@ -113,9 +111,9 @@ function requestDictation(phase) {
     ts: Date.now(),
   }
   try {
-    const tmp = `${ACTION_FILE}.tmp`
+    const tmp = `${P.ACTION_FILE}.tmp`
     fs.writeFileSync(tmp, JSON.stringify(req, null, 2))
-    fs.renameSync(tmp, ACTION_FILE)
+    fs.renameSync(tmp, P.ACTION_FILE)
     log(`dictation ${phase} -> slot ${t.slot} (${path.basename(t.dir)}) pid ${t.pid}`)
   } catch (e) {
     log("failed to write action file:", e?.message || e)
@@ -172,9 +170,9 @@ function requestPermissionResponse(response) {
     ts: Date.now(),
   }
   try {
-    const tmp = `${ACTION_FILE}.tmp`
+    const tmp = `${P.ACTION_FILE}.tmp`
     fs.writeFileSync(tmp, JSON.stringify(req, null, 2))
-    fs.renameSync(tmp, ACTION_FILE)
+    fs.renameSync(tmp, P.ACTION_FILE)
     log(`permission ${req.permissionID} -> ${response} (${path.basename(t.dir)}) pid ${t.pid}`)
   } catch (e) {
     log("failed to write action file:", e?.message || e)
@@ -242,7 +240,7 @@ function alive(pid) {
 function liveClaims() {
   let claims = []
   try {
-    claims = JSON.parse(fs.readFileSync(SLOT_FILE, "utf8"))
+    claims = JSON.parse(fs.readFileSync(P.SLOT_FILE, "utf8"))
   } catch {
     return []
   }

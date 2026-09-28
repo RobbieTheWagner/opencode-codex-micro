@@ -27,8 +27,6 @@ const SLOTS = 6
 const require_boot = createRequire(import.meta.url)
 const P = require_boot("../src/paths.js")
 
-const SLOT_FILE = P.SLOT_FILE
-const ACTION_FILE = P.ACTION_FILE
 const HEARTBEAT_MS = 15_000
 const ACTION_POLL_MS = 150
 
@@ -52,7 +50,7 @@ type Claim = {
 
 function readClaims(): Claim[] {
   try {
-    const v = JSON.parse(fs.readFileSync(SLOT_FILE, "utf8"))
+    const v = JSON.parse(fs.readFileSync(P.SLOT_FILE, "utf8"))
     return Array.isArray(v) ? v : []
   } catch {
     return []
@@ -61,10 +59,10 @@ function readClaims(): Claim[] {
 
 function writeClaims(claims: Claim[]) {
   try {
-    fs.mkdirSync(path.dirname(SLOT_FILE), { recursive: true })
-    const tmp = `${SLOT_FILE}.${process.pid}.tmp`
+    fs.mkdirSync(path.dirname(P.SLOT_FILE), { recursive: true })
+    const tmp = `${P.SLOT_FILE}.${process.pid}.tmp`
     fs.writeFileSync(tmp, JSON.stringify(claims, null, 2))
-    fs.renameSync(tmp, SLOT_FILE) // atomic; concurrent sessions can't tear the file
+    fs.renameSync(tmp, P.SLOT_FILE) // atomic; concurrent sessions can't tear the file
   } catch {}
 }
 
@@ -259,7 +257,7 @@ export const CodexStatusPlugin: Plugin = async ({ directory, client }) => {
   async function pollActions() {
     let req: any
     try {
-      req = JSON.parse(fs.readFileSync(ACTION_FILE, "utf8"))
+      req = JSON.parse(fs.readFileSync(P.ACTION_FILE, "utf8"))
     } catch {
       return
     }
