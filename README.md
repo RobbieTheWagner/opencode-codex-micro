@@ -9,7 +9,7 @@ with that session's live state. Pressing a key jumps to that session's terminal
 tab, whether that is a [herdr](https://herdr.dev) pane or a Ghostty tab.
 
 Works with **any agent that can run a command on an event** —
-[opencode](https://opencode.ai) (deepest integration, via its plugin API),
+[opencode](https://opencode.ai) V2 (deepest integration, via its plugin API),
 Claude Code, Codex, Gemini CLI, Cursor, Copilot, and ~15 more via thin
 adapters. See [docs/adapters.md](docs/adapters.md).
 

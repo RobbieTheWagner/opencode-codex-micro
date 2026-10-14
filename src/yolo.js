@@ -2,7 +2,7 @@
  * YOLO mode — auto-approve every permission request.
  *
  * Shared state between the daemon (which toggles it from the pad) and the
- * plugins (which act on it in their permission.ask hook).
+ * plugins (opencode acts on it in its permission "evaluate" hook).
  *
  * This is deliberately hedged about:
  *   - it EXPIRES automatically (default 15 min) so it cannot be left armed

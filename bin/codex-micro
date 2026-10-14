@@ -19,9 +19,11 @@ const P = require("../src/paths.js")
 // stable directory, because `npx github:...` runs from a disposable cache.
 const RUNNING_FROM = P.ROOT
 let ROOT = P.ROOT
-const PLUGIN_SRC = () => path.join(ROOT, "plugin", "codex-micro.ts")
+const PLUGIN_SRC = () => path.join(ROOT, "plugin", "codex-micro")
 const OPENCODE_PLUGINS = path.join(os.homedir(), ".config", "opencode", "plugins")
-const PLUGIN_LINK = path.join(OPENCODE_PLUGINS, "codex-micro.ts")
+const PLUGIN_LINK = path.join(OPENCODE_PLUGINS, "codex-micro")
+// OpenCode 1 single-file plugin link; V2 cannot load it and logs a failure.
+const LEGACY_PLUGIN_LINK = path.join(OPENCODE_PLUGINS, "codex-micro.ts")
 
 const PKG_PARTS = ["package.json", "bin", "src", "plugin", "templates", "vendor"]
 
@@ -230,9 +232,11 @@ function installSelf({ dev }) {
 
 function installPlugin() {
   fs.mkdirSync(OPENCODE_PLUGINS, { recursive: true })
-  try {
-    fs.unlinkSync(PLUGIN_LINK)
-  } catch {}
+  for (const link of [PLUGIN_LINK, LEGACY_PLUGIN_LINK]) {
+    try {
+      fs.unlinkSync(link)
+    } catch {}
+  }
   fs.symlinkSync(PLUGIN_SRC(), PLUGIN_LINK)
   console.log(`  linked ${PLUGIN_LINK} -> ${PLUGIN_SRC()}`)
 }
@@ -385,6 +389,9 @@ function uninstall() {
   try {
     fs.unlinkSync(PLUGIN_LINK)
     console.log("  removed plugin link")
+  } catch {}
+  try {
+    fs.unlinkSync(LEGACY_PLUGIN_LINK)
   } catch {}
   console.log(c.dim(`\n  state kept at ${P.STATE_DIR} (delete manually if you want it gone)`))
   console.log(c.dim("  device keymap unchanged — run `codex-micro restore` to revert it"))
